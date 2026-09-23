@@ -1,0 +1,16 @@
+[project]
+name = "open-print"
+version = "0.1.0"
+description = "Direct BLE control of MXW01 ('Fun Print') 58mm thermal printers"
+requires-python = ">=3.10"
+dependencies = ["bleak>=0.22", "pillow>=10"]
+
+[project.scripts]
+open-print = "open_print.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["open_print"]
