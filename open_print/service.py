@@ -1,7 +1,7 @@
 """Long-running service that holds the BLE connection so the printer stays awake.
 
 Protocol: one JSON object per line over a Unix socket; one JSON reply per request.
-    {"op": "status"} | {"op": "feed", "mm": N} | {"op": "retract", "mm": N}
+    {"op": "status"} | {"op": "feed", "mm": N} | {"op": "retract", "mm": N} | {"op": "cancel"}
     {"op": "print", "mode": 0|2, "intensity": N, "rows": "<base64>"}
 Replies: {"ok": true, ...} or {"ok": false, "error": "..."}
 """
@@ -16,6 +16,7 @@ from .protocol import Mode, Status
 
 SOCKET_PATH = Path(os.environ.get("OPEN_PRINT_SOCKET", Path.home() / ".open_print" / "printer.sock"))
 KEEPALIVE_SECONDS = 30
+TEAR_FEED_MM = 14  # a normal job auto-feeds ~13.5 mm to the tear bar; a cancelled one doesn't
 RECONNECT_SECONDS = 5
 
 
@@ -28,6 +29,7 @@ class PrinterService:
         self._disconnected = asyncio.Event()
         self.printer = Printer(address, verbose=verbose, on_disconnect=self._disconnected.set)
         self.lock = asyncio.Lock()  # one BLE conversation at a time
+        self.printing = False
 
     async def connection_loop(self) -> None:
         while True:
@@ -63,6 +65,13 @@ class PrinterService:
         if not self.printer.is_connected:
             return {"ok": False, "error": "printer not connected (is it on?)"}
         op = req.get("op")
+        if op == "cancel":  # deliberately bypasses the lock so it can interrupt a running print
+            was_printing = self.printing
+            await self.printer.cancel()
+            if was_printing:
+                async with self.lock:  # released once the print reports (early) completion
+                    await self.printer.feed(TEAR_FEED_MM)
+            return {"ok": True, "was_printing": was_printing}
         async with self.lock:
             if op == "status":
                 st = await self.printer.status()
@@ -86,11 +95,15 @@ class PrinterService:
             if op == "print":
                 rows = base64.b64decode(req["rows"])
                 self.printer.extra_log.clear()
-                secs = await self.printer.print_rows(
-                    rows, Mode(req["mode"]), int(req["intensity"]), float(req.get("chunk_delay", CHUNK_DELAY))
-                )
+                self.printing = True
+                try:
+                    secs = await self.printer.print_rows(
+                        rows, Mode(req["mode"]), int(req["intensity"]), float(req.get("chunk_delay", CHUNK_DELAY))
+                    )
+                finally:
+                    self.printing = False
                 extra = [f"{t:.3f} {name} {d.hex(' ')}" for t, name, d in self.printer.extra_log]
-                return {"ok": True, "seconds": secs, "extra": extra}
+                return {"ok": True, "seconds": secs, "extra": extra, "transfer": self.printer.transfer_log}
         return {"ok": False, "error": f"unknown op {op!r}"}
 
     async def on_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -148,6 +161,9 @@ class RemotePrinter:
         resp = await self._call(op="raw", cmd=cmd, payload=payload.hex(), listen=listen)
         return [bytes.fromhex(r) for r in resp["replies"]]
 
+    async def cancel(self) -> None:
+        await self._call(op="cancel")
+
     async def feed(self, mm: int) -> None:
         await self._call(op="feed", mm=mm)
 
@@ -160,4 +176,5 @@ class RemotePrinter:
             rows=base64.b64encode(rows).decode(),
         )
         self.last_extra = resp.get("extra", [])
+        self.last_transfer = resp.get("transfer", [])
         return resp["seconds"]

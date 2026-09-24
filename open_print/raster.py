@@ -4,6 +4,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 from .protocol import MIN_LINES, PRINTER_WIDTH, Mode, bytes_per_line
 
 DEFAULT_FONT = "/System/Library/Fonts/Menlo.ttc"
+DEFAULT_FONT_INDEX = 1  # Menlo Bold: thin strokes are hard to read on thermal paper
+DEFAULT_TEXT_SIZE = 32
 
 
 def to_gray(img: Image.Image) -> Image.Image:
@@ -54,9 +56,14 @@ def to_rows(img: Image.Image, mode: Mode = Mode.MONO, min_lines: int = MIN_LINES
     return bytes(out)
 
 
-def render_text(text: str, size: int = 28, font_path: str = DEFAULT_FONT) -> Image.Image:
+def load_font(size: int = DEFAULT_TEXT_SIZE, font_path: str = DEFAULT_FONT) -> ImageFont.FreeTypeFont:
+    index = DEFAULT_FONT_INDEX if font_path == DEFAULT_FONT else 0
+    return ImageFont.truetype(font_path, size, index=index)
+
+
+def render_text(text: str, size: int = DEFAULT_TEXT_SIZE, font_path: str = DEFAULT_FONT) -> Image.Image:
     """Render black text on white (mode 'L'), left-aligned, word-wrapped to the paper width."""
-    font = ImageFont.truetype(font_path, size)
+    font = load_font(size, font_path)
     measure = ImageDraw.Draw(Image.new("L", (1, 1)))
     lines: list[str] = []
     for para in text.split("\n"):

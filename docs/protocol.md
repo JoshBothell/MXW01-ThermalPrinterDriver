@@ -37,10 +37,10 @@ AE02 → host: `22 21 CMD xx LEN_LO LEN_HI PAYLOAD…` (no CRC or trailer; `xx` 
 | A3 feed | u16 LE distance | `00` | verified: **~1 mm per unit** (80 → 81 mm) |
 | A4 retract | u16 LE distance | `00` | verified: **~1 mm per unit** (40 → ~38.5 mm) |
 | A7 "query count" | `00` | `5e e3 4c 36 dd 5e` | 6 bytes, constant; looks like a device ID/MAC, not a count |
-| A9 print request | `LINES(u16 LE) 30 MODE` | `00` accepted, `02` no paper | verified for modes 0 and 2 |
+| A9 print request | `LINES(u16 LE) 30 MODE` | `00` accepted, `02` no paper | verified for modes 0 and 2; any line count up to 65535 is accepted (no size pre-check) |
 | AA print complete | (printer → host) | `?` | arrives on AE02 after the job physically finishes |
 | AB battery | `00` | `[percent]` | 0x56 = 86% |
-| AC cancel | `00` | `00` | acked; effect untested |
+| AC cancel | `00` | `00` | verified: stops a running print within ~1 s (a 480-row job stopped at ~row 160). Sends an early AA. **Skips the tear-off feed** |
 | AD flush / go | `00` | none | starts printing buffered data |
 | AE ? | `00` | `00` | harmless, unknown |
 | B0 print type | `00` | `01` | |
@@ -95,6 +95,19 @@ keep up with. Symptom: rows become misaligned or garbled partway through the job
 - 20 ms and 30 ms between chunks: a 46 KB 4-bit job printed clean. A 23 KB mono ruler at 25 ms was clean.
 - **Default 25 ms** (~7 KB/s) for margin.
 Mono jobs are 4× smaller, so they usually stay under the ~19 KB cliff, but long mono prints would hit it too.
+
+### Job length and streaming
+One A9 job can be arbitrarily long. The printer **starts printing on its own once ~48 KB is buffered**
+(without waiting for AD) and keeps consuming data as it arrives, like a leaky bucket.
+- Verified: a single **1400-row / 67 KB mono** job printed continuously, with no seams.
+  The vendor app prints ~1.5 m images the same way.
+- **Open issue, 4-bit:** a 1000-row / 187 KB 4-bit job stopped cleanly at row ~280 (~54 KB) and sent AA
+  while data was still being sent. Likely cause: once printing starts the BLE link slows, and 4-bit needs ~4× more data per mm
+  (~3.8 KB/s at print speed), so the buffer runs dry and the firmware ends the job. Mono only needs ~2.1 KB/s.
+  4-bit jobs ≤ ~48 KB (~250 rows, ~31 mm) are safe.
+- **Rejected approach:** splitting into ≤48 KB jobs joined by a 14 mm retract. Joins were aligned when tuned,
+  but a longer run left gaps and crinkled the paper. Don't do this.
+- AA payload is 3 bytes of unknown meaning (e.g. `00 e8 e8`, `fd ed a0`).
 
 ### Minimum length
 Docs claim 90 rows. A 30-row unpadded mono job printed fine, so we don't pad.

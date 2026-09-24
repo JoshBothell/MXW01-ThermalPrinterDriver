@@ -43,6 +43,8 @@ class Printer:
         self.client: BleakClient | None = None
         self._replies: asyncio.Queue[p.Reply] = asyncio.Queue()
         self.extra_log: list[tuple[float, str, bytes]] = []
+        self.transfer_log: list[tuple[float, int]] = []
+        self._cancelled = False
 
     @property
     def is_connected(self) -> bool:
@@ -86,7 +88,7 @@ class Printer:
 
     async def send(self, pkt: bytes) -> None:
         if self.verbose:
-            print(f"  -> {pkt.hex(' ')}")
+            print(f"  -> {pkt.hex(' ')}", flush=True)
         await self.client.write_gatt_char(CONTROL, pkt, response=False)
 
     async def command(self, cmd: int, payload: bytes = b"\x00", expect: bool = True, timeout: float = 5.0):
@@ -139,6 +141,12 @@ class Printer:
                 return st
             await asyncio.sleep(0.3)
 
+    async def cancel(self) -> None:
+        """Send AC without waiting; safe to call while print_rows() is in flight. Also stops
+        streaming the rest of the job."""
+        self._cancelled = True
+        await self.send(p.packet(Cmd.CANCEL))
+
     async def feed(self, mm: int) -> None:
         await self.wait_idle()
         await self.command(Cmd.FEED, p.u16(mm))  # printer acks with 00, even with no paper
@@ -150,12 +158,23 @@ class Printer:
         await self.wait_idle()
 
     async def print_rows(
-        self, rows: bytes, mode: Mode = Mode.MONO, intensity: int = DEFAULT_INTENSITY, chunk_delay: float = CHUNK_DELAY
+        self, rows: bytes, mode: Mode = Mode.MONO, intensity: int = DEFAULT_INTENSITY,
+        chunk_delay: float = CHUNK_DELAY,
     ) -> float:
-        """Send a print job; returns seconds from flush to completion."""
+        """Print rows of any length as one job; returns seconds from flush to completion.
+
+        The printer starts printing on its own once ~48 KB is buffered and keeps consuming data as it
+        arrives, so long jobs stream fine (verified: 1400-row / 67 KB mono job printed continuously).
+        """
+        self._cancelled = False
+        return await self._print_job(rows, mode, intensity, chunk_delay)
+
+    async def _print_job(self, rows: bytes, mode: Mode, intensity: int, chunk_delay: float) -> float:
         lines = len(rows) // p.bytes_per_line(mode)
         await self.send(p.intensity(intensity))
         st = await self.wait_idle()
+        while not self._replies.empty():  # drop stale replies (e.g. an AA from a cancelled job)
+            self._replies.get_nowait()
         if not st.ok:
             raise PrinterError(f"Printer not ready: {st.error_name} (status {st.raw.hex(' ')})")
         await self.send(p.print_request(lines, mode))
@@ -166,9 +185,20 @@ class Printer:
             raise PrinterError(f"Print request rejected: {reason}")
 
         chunk = max(20, (self.client.mtu_size or 23) - 3)
+        t0 = time.monotonic()
+        self.transfer_log = []  # (seconds since A9 accepted, bytes sent) about every 0.5 s
+        next_mark = 0.0
         for i in range(0, len(rows), chunk):
+            if self._cancelled:
+                break
             await self.client.write_gatt_char(DATA, rows[i : i + chunk], response=False)
             await asyncio.sleep(chunk_delay)  # don't overrun the printer's buffer
+            now = time.monotonic() - t0
+            if now >= next_mark:
+                self.transfer_log.append((now, i + chunk))
+                next_mark = now + 0.5
+        if self._cancelled:
+            return 0.0  # AC already sent; don't flush a partial buffer
 
         start = time.monotonic()
         await self.send(p.packet(Cmd.FLUSH))

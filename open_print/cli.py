@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="show battery, temperature, firmware, errors")
     sub.add_parser("serve", help="hold the printer connection open (keeps it awake); other commands use it")
 
+    sub.add_parser("cancel", help="stop the current print")
     feed = sub.add_parser("feed", help="advance paper")
     feed.add_argument("mm", type=int, nargs="?", default=10)
     retract = sub.add_parser("retract", help="pull paper back (max %d mm, to avoid unthreading)" % MAX_RETRACT_MM)
@@ -33,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     txt = sub.add_parser("text", help="print text")
     txt.add_argument("text")
-    txt.add_argument("--size", type=int, default=28)
+    txt.add_argument("--size", type=int, default=raster.DEFAULT_TEXT_SIZE)
     txt.add_argument("--font", default=raster.DEFAULT_FONT)
 
     for sp in (img, txt):
@@ -89,6 +90,8 @@ async def execute(args, printer, bitmap) -> None:
         print(f"error:       {st.error_name}")
         print(f"sensor:      0x{st.sensor:04x}")
         print(f"raw:         {st.raw.hex(' ')}")
+    elif args.cmd == "cancel":
+        await printer.cancel()
     elif args.cmd == "feed":
         await printer.feed(args.mm)
     elif args.cmd == "retract":

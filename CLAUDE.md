@@ -30,6 +30,13 @@ Read `docs/protocol.md` before touching the protocol. It separates verified fact
 - **Busy = ignored:** commands sent while status state ≠ 0 are acked but ignored. Use `Printer.wait_idle()`.
 - **Feed/retract units ≈ 1 mm.** CLI caps retract at 30 mm. Every job auto-feeds ~13.5 mm after printing.
 - **Errors:** status errflag/errcode 1/1 = no paper (verified). A9 reply 02 = rejected, no paper.
+- **One job, any length:** the printer auto-starts at ~48 KB buffered and streams. Never split prints into
+  multiple jobs joined by retracts (tried: gaps + crinkled paper). 4-bit > ~48 KB still stops early (open).
+- **Cancel:** AC stops within ~1 s but skips the tear-off feed; the service feeds 14 mm after a cancel.
+- **Readability:** anything we render uses bold fonts and ≥3–5 px strokes. `raster.load_font()` defaults to
+  Menlo Bold 32; diag labels are 1.5× nominal size. Fine 1-dot detail is only for deliberate resolution tests.
+- **Verify pattern tests programmatically.** Rebuild the exact sent byte stream and compare it to the intended
+  image. A buggy test pattern once wasted paper and caused a wrong conclusion.
 - **Heat:** A2 saturates at 0x5D (confirmed on paper; 0x64+ no darker, fine detail still crisp). Default 0x5D.
 - **Orientation:** the first row sent prints first. The CLI rotates 180° so output reads upright on the printer.
 - **4-bit:** mode byte 0x02, 192 bytes/row, high nibble = left dot, 0xF = black. Levels 0–4 barely mark.
@@ -43,12 +50,14 @@ Read `docs/protocol.md` before touching the protocol. It separates verified fact
 - `printer.py`: `Printer` async context manager over bleak. `print_rows(rows, mode, intensity, chunk_delay)`.
 - `raster.py`: PIL → rows. `prepare()` scales to 384 wide; `to_rows()` packs for a mode.
 - `service.py`: `PrinterService` (holds connection, 30s status keepalive, auto-reconnect, Unix socket
-  `~/.open_print/printer.sock`, newline-JSON ops: status/feed/retract/print/raw) and `RemotePrinter` client.
+  `~/.open_print/printer.sock`, newline-JSON ops: status/feed/retract/print/cancel/raw) and `RemotePrinter`.
+  `cancel` bypasses the job lock so it can interrupt a print.
 - `cli.py`: tries `RemotePrinter` first and falls back to a direct `Printer`.
 
 ## Open questions / next experiments
 - Error codes 9 (community "no paper"), 4 (overheat) and 8 (low battery) are unverified. Lid open and empty
   both give 1.
-- Pacing could be smarter: burst the first ~16 KB, then throttle. Maximum job length/buffer size unknown.
+- 4-bit streaming past ~48 KB: try faster pacing once printing starts, or send AD early.
+- Pacing could be smarter: burst the first ~16 KB, then throttle.
 - Mode 0x01, commands AC (cancel), AE/B2 meaning, status byte 8.
 - Gray-mode tuning: remap levels so 0–4 aren't wasted (compress the tone curve into 5–F).

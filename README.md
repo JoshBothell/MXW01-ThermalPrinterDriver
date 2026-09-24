@@ -50,6 +50,7 @@ open-print image photo.jpg --mode gray    # 4-bit grayscale
 open-print image logo.png --no-dither     # hard threshold, for line art
 open-print feed 20          # advance paper 20 mm
 open-print retract 5        # pull paper back 5 mm (capped at 30 mm so it doesn't unthread)
+open-print cancel           # stop the current print
 open-print text "x" --preview out.png     # render to a file instead of printing
 ```
 
@@ -68,6 +69,10 @@ connects on its own, which is slower (it has to scan first) and doesn't keep the
 - **Send data slowly.** The printer silently drops data that arrives too fast, which garbles the rest of the
   print. The driver waits 25 ms between chunks (15 ms breaks, 20 ms works).
 - **Every print ends with ~13.5 mm of automatic feed** to reach the tear bar, so combine content into one job.
+- **Long prints work as a single job.** The printer streams (verified with 17.5 cm of mono). 4-bit gray is
+  currently only reliable up to ~31 mm per print.
+- **`open-print cancel`** stops a running print within about a second, then feeds the partial print out to the tear bar.
+- Generated text defaults to **Menlo Bold 32**. Thin strokes are hard to read on thermal paper.
 - **Feed/retract move ~1 mm per unit**, and commands sent while the printer is busy are silently ignored.
   The driver waits for standby.
 - **Paper out** gives no beep or light; it only shows in `status` (error "no paper"), and prints are refused.
